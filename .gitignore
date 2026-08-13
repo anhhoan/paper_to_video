@@ -1,0 +1,19 @@
+# Python / Virtualenv
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+ENV/
+
+# Configuration / Secrets
+.env
+
+# Output Data (Video, Audio tạm)
+output/
+*.mp3
+*.mp4
+*.tmp
+
+# IDE / Editor files
+.vscode/
+.idea/
