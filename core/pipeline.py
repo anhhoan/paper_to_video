@@ -1,6 +1,5 @@
 import os
-from moviepy import ImageClip, AudioFileClip
-
+from moviepy import ImageClip, AudioFileClip, TextClip, CompositeVideoClip
 from scrapers.article_scraper import ArticleScraper
 from script_writer.gemini_client import GeminiClient
 from tts_engine.synthesizer import TTSSynthesizer
@@ -11,49 +10,72 @@ class AutomationPipeline:
         self.gemini = GeminiClient()
         self.tts = TTSSynthesizer()
 
-    def run(
-        self, 
-        url: str, 
-        thumbnail_path: str, 
-        voice: str = "vi-VN-NamMinhNeural", 
-        content_type: str = "news",  # Mặc định 'news' (tin tức), có thể truyền 'story' (kể chuyện/vụ án)
-        output_video_path: str = "output/final_video.mp4"
-    ) -> str:
-        """
-        Quy trình tạo Video từ URL và 1 Ảnh Thumbnail duy nhất (Đã tối ưu siêu tốc).
-        """
-        if not os.path.exists(thumbnail_path):
-            raise FileNotFoundError(f"Không tìm thấy file ảnh tại: {thumbnail_path}")
+    def _create_subtitles_clips(self, subtitles, video_width=1080, video_height=1920):
+        """Tạo danh sách các TextClip phụ đề chạy theo từng từ/cụm từ"""
+        sub_clips = []
+        for sub in subtitles:
+            # Tạo TextClip phụ đề màu vàng chữ viền đen
+            try:
+                txt_clip = (
+                    TextClip(
+                        font="Arial-Bold",
+                        text=sub.text,
+                        font_size=60,
+                        color='yellow',
+                        stroke_color='black',
+                        stroke_width=3,
+                        method='caption',
+                        size=(video_width - 100, None)
+                    )
+                    .with_start(sub.start)
+                    .with_duration(max(0.1, sub.end - sub.start))
+                    .with_position(('center', video_height * 0.75)) # Đặt chữ ở 3/4 chiều cao video
+                )
+                sub_clips.append(txt_clip)
+            except Exception as e:
+                # Bỏ qua nếu lỗi font/ký tự đặc biệt
+                continue
+        return sub_clips
 
-        print("--> Bước 1: Lấy nội dung bài viết...")
+    def run(self, url: str, thumbnail_path: str, voice: str = "vi-VN-NamMinhNeural", output_video_path: str = "output/final_video.mp4") -> str:
+        print("--> 1. Cào dữ liệu bài viết...")
         article_source = self.scraper.fetch(url)
         article_text = article_source.text if hasattr(article_source, 'text') else str(article_source)
 
-        print(f"--> Bước 2: Dùng Gemini biên tập văn bản ({content_type})...")
-        voiceover_text = self.gemini.generate(article_text, content_type=content_type)
+        print("--> 2. Gemini phân tích & xuất JSON Kịch bản...")
+        script_data = self.gemini.generate(article_text)
+        voiceover_text = script_data.get("full_voiceover", "")
 
-        print("--> Bước 3: Tạo 1 file giọng đọc Edge-TTS duy nhất...")
-        audio_path, _ = self.tts.synthesize_full_text(voiceover_text, voice=voice)
+        print(f"📌 TIÊU ĐỀ VIDEO: {script_data.get('metadata', {}).get('title', '')}")
+        print("--> 3. Đang đọc Voiceover & Tạo mốc thời gian Phụ đề (Subtitles)...")
+        # synthesize_full_text cần trả về (audio_path, subtitles)
+        audio_path, subtitles = self.tts.synthesize_full_text(voiceover_text, voice=voice)
 
-        print("--> Bước 4: Render Video hoàn chỉnh (1 Ảnh Thumbnail + Voice)...")
+        print("--> 4. Ghép Video + Audio + Chèn Phụ đề...")
         os.makedirs(os.path.dirname(output_video_path), exist_ok=True)
         
         audio_clip = AudioFileClip(audio_path)
         
-        # Đọc ảnh và resize về chuẩn 1080p
+        # Load Ảnh nền (mặc định dạng dọc 1080x1920 cho TikTok/Shorts)
         base_image = ImageClip(thumbnail_path)
         if hasattr(base_image, 'resized'):
-            base_image = base_image.resized(height=1080)
+            base_image = base_image.resized(height=1920)
         elif hasattr(base_image, 'resize'):
-            base_image = base_image.resize(height=1080)
+            base_image = base_image.resize(height=1920)
 
-        # Ghép ảnh với audio theo đúng thời lượng giọng đọc
         video_clip = base_image.with_duration(audio_clip.duration).with_audio(audio_clip)
 
-        # Render siêu tốc (2 FPS, mã hóa ultrafast)
-        video_clip.write_videofile(
+        # Chèn danh sách Phụ đề lên Video
+        sub_clips = self._create_subtitles_clips(subtitles, video_width=1080, video_height=1920)
+        if sub_clips:
+            final_video = CompositeVideoClip([video_clip] + sub_clips)
+        else:
+            final_video = video_clip
+
+        print("--> 5. Đang Xuất Video (Render)...")
+        final_video.write_videofile(
             output_video_path,
-            fps=2,
+            fps=24,
             codec="libx264",
             audio_codec="aac",
             preset="ultrafast",
@@ -61,10 +83,10 @@ class AutomationPipeline:
             logger=None
         )
 
-        # Giải phóng bộ nhớ RAM
-        video_clip.close()
+        # Dọn dẹp RAM
+        final_video.close()
         audio_clip.close()
         base_image.close()
 
-        print(f"✅ Hoàn tất! Video đã lưu tại: {output_video_path}")
+        print(f"✅ HOÀN TẤT! Video có phụ đề đã xuất tại: {output_video_path}")
         return output_video_path

@@ -1,5 +1,8 @@
 import os
+import json
+import re
 from google import genai
+from google.genai import types
 from config import GEMINI_API_KEY
 
 class GeminiClient:
@@ -7,74 +10,102 @@ class GeminiClient:
         self.api_key = api_key or os.environ.get("GEMINI_API_KEY")
         if not self.api_key:
             raise ValueError("Chưa cấu hình GEMINI_API_KEY trong file .env!")
-            
-        # Khởi tạo Client chuẩn theo SDK google-genai
         self.client = genai.Client(api_key=self.api_key)
 
-    def _build_prompt(self, article_text: str, content_type: str = "news") -> str:
-        if content_type == "story":
-            return f"""
-Bạn là một người kể chuyện truyền cảm chuyên về các câu chuyện hấp dẫn, vụ án và kỳ án. 
-Hãy chuyển thể bài viết/hồ sơ dưới đây thành một kịch bản thoại đọc video (Voiceover) đầy kịch tính, lôi cuốn.
+    def _get_prompt_template(self, article_text: str) -> str:
+        return f"""
+Bạn là một Biên tập viên Video Chuyên nghiệp (BTV Tin tức thế hệ mới). Nhiệm vụ của bạn là đọc bài báo đầu vào, TỰ ĐỘNG PHÂN LOẠI thể loại và viết kịch bản audio (200 - 300 từ) vừa chuẩn xác, vừa cực kỳ thu hút trên video ngắn.
 
-Yêu cầu biên tập:
-1. Phong cách kể chuyện:
-   - Dùng văn phong nói, mở đầu lôi cuốn (Hook) kéo người nghe vào bối cảnh.
-   - Diễn đạt tình tiết logic, xây dựng cao trào (nếu là vụ án/kỳ án) và chốt lại bằng kết thúc lắng đọng.
-   - Nhịp điệu câu từ linh hoạt, truyền cảm, tự nhiên như lời kể trực tiếp.
-2. Định dạng văn bản:
-   - Viết thành các đoạn văn thuần túy nối tiếp nhau, liền mạch.
-   - Tuyệt đối KHÔNG dùng ký tự định dạng (**, #, *), KHÔNG gạch đầu dòng, KHÔNG ghi chú kịch bản ([Âm nhạc], [Cảnh 1], [Tiếng động]).
-   - Chuyển các con số hoặc từ viết tắt phức tạp thành chữ đọc được.
+HÃY THỰC HIỆN THEO QUY TRÌNH 2 BƯỚC:
 
-Nội dung gốc:
+BƯỚC 1: XÁC ĐỊNH THỂ LOẠI (Category Detection)
+Dựa vào nội dung bài báo, chọn 1 trong 2 nhóm:
+- Nhóm A: [TIN TỨC] (Kinh tế, Thời sự, Công nghệ, Xã hội, Thể thao, Chính sách, Đời sống...).
+- Nhóm B: [CÂU CHUYỆN / VỤ ÁN] (Kỳ án, Tội phạm, Tâm lý, Drama, Trải nghiệm cá nhân...).
+
+BƯỚC 2: VIẾT KỊCH BẢN THEO CHUẨN VĂN PHONG TƯƠNG ỨNG
+
+🔴 NẾU LÀ [TIN TỨC] (Chuẩn mực nhưng Phải Thu hút & Cuốn hút):
+- Nguyên tắc cốt lõi: Tôn trọng sự thật 100%, KHÔNG thêu dệt, KHÔNG phán xét hay giật gân rẻ tiền.
+- Nghệ thuật thu hút (Cách làm tin hiện đại):
+  1. HOOK: Đặt ngay câu hỏi về "Tác động của tin này đến người xem là gì?" hoặc "Số liệu/Sự thật bất ngờ nhất" lên đầu. Không chào hỏi, không đọc tiêu đề báo.
+  2. Văn phong: Dùng văn phong nói (Spoken language) hiện đại, câu ngắn, nhịp điệu dồn dập, tự nhiên như BTV đang trò chuyện trực tiếp.
+  3. Cấu trúc 4 phần:
+     - hook: Điểm tin/Sự việc quan trọng nhất + Lý do người xem cần quan tâm (1-2 câu).
+     - setup: Bối cảnh ngắn gọn, thời gian, nhân vật/đơn vị liên quan.
+     - core_narrative: Chi tiết diễn biến chính và các con số/thông tin đắt giá.
+     - outcome_or_insight: Tình hình hiện tại, tác động hoặc bước xử lý tiếp theo.
+
+🔴 NẾU LÀ [CÂU CHUYỆN / VỤ ÁN] (Kể chuyện & Kịch tính):
+- Văn phong: Hồi hộp, giàu hình ảnh, tập trung vào chi tiết đắt giá và diễn biến cảm xúc.
+- Cấu trúc 5 phần: hook (Gây tò mò) -> setup (Bối cảnh) -> core_narrative (Cao trào) -> outcome_or_insight (Kết cục) -> cta (Tương tác).
+
+BỘ LỌC TỪ NGỮ NGUY HẠI (BẮT BUỘC ÁP DỤNG BẤT KỂ THỂ LOẠI):
+Thay thế các từ nhạy cảm để tránh bị bóp tương tác:
+- Giết / Sát hại -> Ra tay, tước đoạt mạng sống
+- Chặt / Cắt -> Bay đầu, làm tổn thương
+- Máu -> Vết đỏ, siro dâu
+- Thi thể -> Người xấu số
+- Tự tử -> Tự kết thúc hành trình
+- Hiếp dâm / Tấn công tình dục -> Hành vi xâm phạm
+
+ĐỊNH DẠNG ĐẦU RA (CHỈ JSON HỢP LỆ):
+BẮT BUỘC trả về JSON theo đúng cấu trúc dưới đây, không kèm bất kỳ văn bản nào bên ngoài.
+
+{{
+  "analysis": {{
+    "category": "TIN TỨC hoặc CÂU CHUYỆN",
+    "core_topic": "1 câu tóm tắt nội dung chính",
+    "tone": "Chính xác & Cuốn hút / Hồi hộp / Trầm lắng"
+  }},
+  "metadata": {{
+    "title": "Tiêu đề ngắn gọn, giật giật nhẹ, < 65 ký tự",
+    "hashtags": ["3-5 hashtag liên quan"]
+  }},
+  "script": {{
+    "hook": "Nội dung phần hook thu hút người xem",
+    "setup": "Nội dung phần bối cảnh",
+    "core_narrative": "Nội dung diễn biến chính",
+    "outcome_or_insight": "Nội dung kết quả / tác động",
+    "cta": "Câu hỏi ngắn nhẹ nhàng thu hút comment (nếu có)"
+  }}
+}}
+
+NỘI DUNG BÀI BÁO CẦN XỬ LÝ:
 {article_text}
 """
-        else: # Tin tức
-            return f"""
-Bạn là một Biên tập viên Thời sự chuyên nghiệp. Hãy chuyển hóa bài viết dưới đây thành một bản tin truyền thanh mượt mà để đọc voiceover video.
 
-Yêu cầu biên tập:
-1. Cấu trúc 3 phần: Mở đầu gây chú ý -> Thân bài tóm tắt ý chính liền mạch -> Kết thúc chốt vấn đề.
-2. Dùng văn phong nói tự nhiên, nhịp điệu mượt mà.
-3. Tuyệt đối KHÔNG dùng ký tự định dạng (**, #, *), KHÔNG gạch đầu dòng, KHÔNG ghi chú kịch bản ([Cảnh 1], [Âm nhạc]).
-4. Viết thành đoạn văn thuần thúy, liền mạch.
+    def generate(self, article_text: str) -> dict:
+        prompt = self._get_prompt_template(article_text)
+        models_to_try = ['gemini-2.5-flash', 'gemini-2.0-flash']
 
-Nội dung gốc:
-{article_text}
-"""
-
-    def generate(self, article_text: str, content_type: str = "news") -> str:
-        prompt = self._build_prompt(article_text, content_type)
-        
-        # Danh sách model ưu tiên
-        models_to_try = [
-            'gemini-3.6-flash',
-            'gemini-2.5-flash',
-            'gemini-2.0-flash'
-        ]
-
-        last_error = None
         for model_name in models_to_try:
             try:
-                print(f"--> Đang gọi Gemini API với model: {model_name}...")
+                print(f"--> Đang gửi prompt cho Gemini model: {model_name}...")
                 response = self.client.models.generate_content(
                     model=model_name,
-                    contents=prompt
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json" # Ép Gemini trả về JSON
+                    )
                 )
-                if response.text:
-                    print(f"✅ Biên tập văn bản thành công bằng model: {model_name}")
-                    return response.text
+                
+                # Clean JSON String
+                raw_json = response.text.strip()
+                raw_json = re.sub(r'^```json\s*', '', raw_json)
+                raw_json = re.sub(r'\s*```$', '', raw_json)
+                
+                data = json.loads(raw_json)
+                
+                # Nối 5 phần kịch bản thành 1 đoạn voiceover duy nhất
+                script = data.get("script", {})
+                full_voiceover = f"{script.get('hook', '')} {script.get('setup', '')} {script.get('core_narrative', '')} {script.get('outcome_or_insight', '')} {script.get('cta', '')}"
+                
+                data["full_voiceover"] = re.sub(r'\s+', ' ', full_voiceover).strip()
+                return data
+
             except Exception as e:
-                last_error = e
-                print(f"Model {model_name} gặp lỗi: {e}. Đang chuyển sang model dự phòng...")
+                print(f"Lỗi với model {model_name}: {e}")
                 continue
 
-        raise RuntimeError(f"Lỗi khi gọi Gemini API với toàn bộ các models fallback: {last_error}")
-
-    # Các hàm Alias dự phòng tương thích ngược với code cũ
-    def generate_script(self, article_text: str, content_type: str = "news") -> str:
-        return self.generate(article_text, content_type)
-
-    def generate_script_from_text(self, article_text: str) -> str:
-        return self.generate(article_text)
+        raise RuntimeError("Không thể tạo kịch bản JSON từ Gemini.")
